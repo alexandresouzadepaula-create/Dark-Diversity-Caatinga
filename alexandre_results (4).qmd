@@ -1,0 +1,561 @@
+---
+title: "Alexandre_results"
+format: docx
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(GGally)
+library(vroom)
+
+```
+
+
+
+## Estimating dark diversity
+
+```{r general}
+
+my_theme <- cowplot::theme_cowplot() + theme(
+  axis.title = element_text(size = 26),
+  axis.text = element_text(size = 24),
+  legend.text = element_text(size = 22),
+  plot.title = element_text(size = 30, face = "bold")
+)
+
+#dt <- vroom("DDCaatinga.csv") #|> 
+  
+dt <- vroom("df_correct.csv") |> rename(plots = 1)
+
+dtt <- dt |> pivot_longer(-plots, names_to = "sp", values_to = "values") |> 
+  group_by(sp) |> 
+  mutate(sum_val = sum(values)) |> 
+  #ggplot(aes(x=sum_val))+geom_histogram()
+  filter(!sum_val < 3) |>
+  ungroup() |>
+  #summarise(n_distinct(sp))
+  select(-sum_val) |> 
+  pivot_wider(names_from = "sp", values_from = "values")
+
+write.csv(dtt, "03-26-25_PlanilhaFiltrada.csv") # 3 areas pelo menos
+
+
+library(DarkDiv)
+
+#Estimating dark diversity
+dark <- dtt[,-1] %>%
+  DarkDiv(.)
+
+
+obs_df <- dtt %>% 
+  pivot_longer(-c(1), names_to = "sp", values_to = "obs") 
+
+
+#Selecting column `plots` to bind it afterwards
+
+
+sel_col <- dtt |> 
+  select(1)
+
+
+dark_df1 <- dark |> pluck("Dark") |> as.data.frame() |> 
+
+  bind_cols(sel_col) |> relocate(plots) |> 
+
+  pivot_longer(-c(plots), names_to = "sp", values_to = "dark") |> 
+#left_join(obs_df, by = c("plots", "sp")) |>
+  mutate(obs = case_when(is.na(dark) ~ 1, T ~ 0),
+         dark = case_when(obs == 1 ~ 0, T ~ dark),
+         dark05 = case_when(dark > .5 ~ 1, T ~ 0),
+         dark06 = case_when(dark > .6 ~ 1, T ~ 0),
+         dark07 = case_when(dark > .7 ~ 1, T ~ 0),
+         dark08 = case_when(dark > .8 ~ 1, T ~ 0),
+         dark09 = case_when(dark > .9 ~ 1, T ~ 0)) 
+# ##|> 
+# #%>% 
+#   # mutate(dark_ses = qnorm(dark, mean = 0, sd = 1),
+#   #        dark_inv = tanh(dark_ses),
+#   #        dark_inv =  ifelse(dark_inv > 0, dark_inv, 0)) %>%
+# mutate(dark75 = quantile(dark, probs = 0.75, na.rm = TRUE),
+# dark90 = quantile(dark, probs = 0.90, na.rm = TRUE),
+# dark95 = quantile(dark, probs = 0.95, na.rm = TRUE)) |>
+# mutate(dark75 = case_when(dark >= dark75 ~ 1, T ~ 0),
+# dark90 = case_when(dark >= dark90 ~ 1, T ~ 0),
+# dark95 = case_when(dark >= dark95 ~ 1, T ~ 0))
+
+
+# dark_df1 <- dark_df |>  mutate(dark = case_when(dark > .8 ~ 1,
+#                                                 T ~ 0)) |> 
+#   left_join(obs_df, by = c("plots", "sp")) |>
+#   ungroup() %>% 
+#   mutate(pool = dark+obs)
+
+
+df_all <- dark_df1 |> 
+   # left_join(obs_df, by = c("plots", "sp")) |> 
+  ungroup() %>% 
+  # drop_na() %>% 
+  group_by(plots) |> 
+  summarise(sum_obs = sum(obs),
+            #sum_dark6 = sum(dark06),
+            sum_dark7 = sum(dark07),
+            #sum_dark8 = sum(dark08),
+            #sum_dark9 = sum(dark09),
+            # compl = log(sum_obs/sum_dark)) %>% ungroup()
+            # sum_dark75 = sum(dark75),
+            # sum_dark90 = sum(dark90),
+             #sum_dark95 = sum(dark95)
+            ) |>
+   ungroup()
+
+
+
+
+```
+
+
+
+## Dispersal
+
+
+```{r}
+
+disp <- vroom("dispersal.csv") |> select(1:4) |> drop_na()
+
+disp_clean <- disp %>%
+  mutate(sp = str_extract(Epecie, "^\\S+\\s+\\S+") %>% 
+           str_replace(" ", ".")) |> 
+  select(Predictions.log10MDD, sp)
+
+
+dispersal_df <- dark_df1 |> select(plots, sp, obs, dark07) |> 
+#  filter(obs > 0) |>
+  mutate(sp = str_replace(sp, "Schinopsis brasiliensis.*", "Schinopsis.brasiliensis")) |> 
+  left_join(disp_clean, by = "sp") |> 
+  filter(!(obs == 0 & dark07 == 0)) |> 
+  pivot_longer(-c(plots,sp,Predictions.log10MDD), names_to = "div", values_to = "values") |> 
+  filter(values > 0) |> 
+  group_by(plots, div) |> 
+  summarise(meanDispersal = mean(Predictions.log10MDD) ) |> 
+  pivot_wider(names_from = div, values_from = meanDispersal) |> 
+  rename(dark_MDD = dark07, obs_MDD = obs)
+
+
+#write.csv(dispersal_df, "03-26-25_PlanilhaMDDFiltrada.csv")
+
+```
+
+
+## Combining data (Dark div with environmental data)
+
+```{r comb}
+
+dta <- vroom("DDCaatinga_new2.csv") |> 
+  clean_names()
+  
+
+
+
+clean_dt <- dta %>%
+  mutate(plots = str_replace(plots, "([A-Z]+)([0-9])$", "\\10\\2")) %>% 
+
+  select(-size_m2, -obs_diver, 
+         -dark_0_9, -dark_0_7, -dist_disp_dark, -dist_disp_obs)
+  
+  
+bioclim_names <- c(
+  "cdi" = "Chronic anthropogenic disturbance",
+  "bio_12" = "Annual Precipitation",
+  "bio_7" = "Temperature Annual Range",
+  "alt" = "Altitude",
+  "bio_2" = "Mean Diurnal Range",
+  "bio_3" = "Isothermality",
+  "bio_15" = "Precipitation Seasonality",
+  "area_ha" = "Area" 
+)
+
+
+
+#prep_data %>% View()
+
+prep_data <- df_all |> 
+  left_join(clean_dt, by = "plots") |> mutate(area_ha  = as.double(area_ha)) |> 
+  arrange(plots) |>
+  select(-bio_5, -bio_11, -bio_8, -bio_9, -bio_6, -bio_17, -bio_18, -bio_19, -bio_13, -bio_14, -bio_10, -bio_16, -bio_4, -bio_1) |> 
+  rename_with(~ recode(., !!!bioclim_names)) %>% 
+  left_join(dispersal_df, by = "plots") |> 
+  # select(-dark_0_7) |> 
+  
+pivot_longer(-c(plots, `Chronic anthropogenic disturbance`:`Precipitation Seasonality`, Area), 
+               names_to = "div", values_to = "values") |>
+  pivot_longer(-c(plots,Area, div, values), 
+               names_to = "var", values_to = "val_var")
+
+
+```
+
+#Figures
+
+
+### Figura dark e observada
+
+```{r fig}
+
+pool_fig <- prep_data |> 
+  #filter(!var == "Annual Precipitation" | !val_var > 1200) %>% 
+  filter(div %in% c("sum_obs", "sum_dark7")) |> 
+         #!div == "dark_0_7",
+         #!div == "sum_obs") |> 
+         # ) |> 
+ # mutate(val_var = scale(val_var)) |> 
+  mutate(div = fct_relevel(div,c("sum_obs","sum_dark7"))) %>% 
+  ggplot(aes(x =log10(val_var), y=values, colour=div, fill = div))+ 
+  geom_point(alpha = 0.2,size =4) + 
+  # geom_smooth(method = 'lm') +
+  
+  geom_smooth(linewidth =1.5,
+              method = 'glm', 
+              method.args = list(family = poisson(link = "log")))+
+  #scale_y_log10()+
+              #method.args = list(family = poisson(link = "log"))) +
+ # geom_smooth(method = "gam",  formula = y ~ s(x, bs = "cr", k =5))+
+# ggpmisc::stat_poly_eq(
+# aes(label = paste(after_stat(eq.label), after_stat(rr.label), after_stat(p.value.label), sep = "~~~")),
+# formula = y ~ x,
+# parse = TRUE,
+# label.x.npc = "right",  # Position the label
+# label.y.npc = "top",
+# size = 3)+
+    facet_wrap(~var, scales = "free")+
+  ylab("Number of species")+
+  xlab("")+
+  scale_color_brewer(palette = "Set1", direction = -1, name = "",
+                     labels = c("Observed diversity","Dark diversity"))+
+  scale_fill_brewer(palette = "Set1",direction = -1, name = "",
+                    labels = c("Observed diversity","Dark diversity"))+
+  my_theme
+# ?scale_color_brewer
+pool_fig
+
+
+
+
+pool_fig2 <- pool_fig + 
+  theme(legend.position = c(0.44, 0.15))
+ggsave("pool_fig07_atLeast3plots.png", pool_fig2,  height = 12, width = 18)
+
+
+```
+
+```{r suppfig}
+supp_fig <- prep_data |> 
+  
+  #filter(!var == "Annual Precipitation" | !val_var > 1200) %>% 
+  filter(#div %in% c("sum_obs", "sum_dark")) |> 
+         !div == "dark_0_7",
+         !div == "sum_obs") |> 
+         # ) |> 
+ # mutate(val_var = scale(val_var)) |> 
+ # mutate(div = fct_relevel(div,c("sum_obs","sum_dark"))) %>% 
+  ggplot(aes(x =val_var, y=values, colour=div, fill = div))+ 
+  geom_point(alpha = 0.2,size =4) + 
+  # geom_smooth(method = 'lm') +
+  
+  geom_smooth(linewidth =1.5,
+              method = 'glm', 
+              method.args = list(family = poisson(link = "log")))+
+  #scale_y_log10()+
+              #method.args = list(family = poisson(link = "log"))) +
+ # geom_smooth(method = "gam",  formula = y ~ s(x, bs = "cr", k =5))+
+ # stat_poly_eq(
+ #   aes(label = paste(after_stat(eq.label), after_stat(rr.label), after_stat(p.value.label), sep = "~~~")),
+ #   formula = y ~ x,
+ #   parse = TRUE,
+ #   label.x.npc = "right",  # Position the label
+ #   label.y.npc = "top",
+ #   size = 3)+
+    facet_wrap(~var, scales = "free")+
+  ylab("Number of species")+
+  xlab("")+
+  # scale_color_brewer(palette = "Set1", name = "",
+  #                    labels = c("Observed diversity","Dark diversity"))+
+  # scale_fill_brewer(palette = "Set1", name = "",
+  #                   labels = c("Observed diversity","Dark diversity"))+
+  ggtitle("Effect of different thresholds on dark diversity size")+my_theme
+# ?scale_color_brewer
+supp_fig
+
+ggsave("supp_fig.png", supp_fig,  height = 12, width = 16)
+```
+
+## Dispersal distance
+
+```{r disp}
+
+disp_fig <- prep_data |>
+  filter(div %in% c("dark_MDD", "obs_MDD")) |> 
+  mutate(div = case_when(div == "dark_MDD" ~ "Dark diversity", T ~ "Observed diversity")) |> 
+  #ggplot(aes(x=values,colour = div))+geom_histogram()
+  ggplot(aes(x = log10(val_var), y=values, colour = div ))+ 
+ geom_point(alpha = 0.2,size =4) + 
+  # geom_smooth(method = 'lm') +
+  
+  geom_smooth(linewidth =1.5,
+              method = 'lm', 
+              )+
+   # ggpmisc::stat_poly_eq(
+   #  aes(label = paste(after_stat(eq.label), after_stat(rr.label), after_stat(p.value.label), sep = "~~~")),
+   #  formula = y ~ x,
+   #  parse = TRUE,
+   #  label.x.npc = "right",  # Position the label
+   #  label.y.npc = "top",
+   #  size = 3)+
+   # 
+  facet_wrap(~var, scales = "free")+
+  ylab("log10(Dispersal distance (m))")+
+  xlab("")+my_theme+
+  theme(legend.title = element_blank(),
+         legend.position = c(0.44, 0.15))
+
+disp_fig
+  
+  
+#ggsave("dispersal_distance_atLeast3plots.png", disp_fig,  height = 12, width = 16)
+
+```
+
+
+# Completeness
+
+```{r comp}
+
+compl_fig <- prep_data |> 
+  #filter(!var == "Annual Precipitation" | !val_var > 1200) %>% 
+  filter(div %in% c("sum_obs", "sum_dark7")) |> 
+  pivot_wider(names_from = div, values_from = values) |> mutate(completeness = log(sum_obs/sum_dark7)) |> 
+  dplyr::select(-sum_obs, -sum_dark7) |> 
+  #pivot_longer(-c(plots:val_var), names_to = "div", values_to = "values") |> 
+  #filter(div == "")
+         #!div == "dark_0_7",
+         #!div == "sum_obs") |> 
+         # ) |> 
+ # mutate(val_var = scale(val_var)) |> 
+  #mutate(div = fct_relevel(div,c("sum_obs","sum_dark7"))) %>% 
+  ggplot(aes(x =log10(val_var), y=completeness))+ 
+  geom_point(alpha = 0.2, size =4, colour = "orange", fill = "orange") + 
+  # geom_smooth(method = 'lm') +
+  
+  geom_smooth(method = 'glm', colour = "orange", fill = "orange")+
+  #scale_y_log10()+
+              #method.args = list(family = poisson(link = "log"))) +
+ # geom_smooth(method = "gam",  formula = y ~ s(x, bs = "cr", k =5))+
+  # ggpmisc::stat_poly_eq(
+  #  aes(label = paste(after_stat(eq.label), after_stat(rr.label), after_stat(p.value.label), sep = "~~~")),
+  #  formula = y ~ x,
+  #  parse = TRUE,
+  #  label.x.npc = "right",  # Position the label
+  #  label.y.npc = "top",
+  #  size = 3)+
+    facet_wrap(~var, scales = "free")+
+  ylab("Completeness")+
+  xlab("")+my_theme
+# ?scale_color_brewer
+compl_fig
+
+#ggsave("completeness_fig_atLeast3plots.png", compl_fig,  height = 10, width = 12)
+
+
+
+
+```
+# Models
+
+```{r models}
+
+modprep <- prep_data |> #mutate(val_var = log(val_var)) |> 
+   mutate(val_var = log10(val_var)) %>% 
+  #mutate(Area = scale(Area), val_var = scale(val_var)) |> 
+  pivot_wider(names_from = div, values_from = values)|> 
+  pivot_wider(names_from = var, values_from = val_var)
+
+modcompl <- prep_data |> 
+  mutate(val_var = log10(val_var)) %>% 
+  #filter(!var == "Annual Precipitation" | !val_var > 1200) %>% 
+  filter(div %in% c("sum_obs", "sum_dark7")) |> 
+  pivot_wider(names_from = div, values_from = values) |> mutate(completeness = log(sum_obs/sum_dark7)) |> 
+  dplyr::select(-sum_obs, -sum_dark7) |> 
+  #pivot_wider(names_from = div, values_from = values)|> 
+  pivot_wider(names_from = var, values_from = val_var)
+
+
+```
+
+
+## Correlation plots
+
+```{r corr}
+#install.packages("ggcorrplot")
+
+library(ggcorrplot)
+
+cp <- modprep %>% select(`Chronic anthropogenic disturbance`:`Precipitation Seasonality`)
+
+cp2 <- cor(cp, use = "complete.obs")
+
+
+
+cp_fig <- ggcorrplot(cp2, lab = TRUE, type = "upper", 
+           colors = c("blue", "white", "red"))
+
+
+ggsave("corr_plot.png", cp_fig,  height = 10, width = 12)
+
+```
+
+## Observed diversity
+
+-   Diversidade observada diminui com perturbacao, altitude e precipitation seasonality
+
+-   Diversidade observada aumenta com annual precipitation
+
+```{r modobs}
+
+
+#
+modprepObs <- modprep |> select(sum_obs, `Chronic anthropogenic disturbance`:`Precipitation Seasonality`)
+
+modelo_obs <-  glm(sum_obs ~., data = modprepObs,
+                   family = poisson(link = "log"))
+
+car::vif(modelo_obs)
+
+#plot(modelo_obs)
+#hist(residuals(modelo_obs_step))
+
+summary(modelo_obs)
+
+
+modelo_obs_step <- MASS::stepAIC(modelo_obs, direction = "both")
+summary(modelo_obs_step)
+
+
+#summary(modelo_dark_step)
+#1-modelo_obs_step$dev/modelo_obs_step$null
+```
+
+## Dark diversity
+
+-   Diversidade escura diminui com perturbacao e Isothermality
+
+-   Diversidade escura aumenta com precipitacao e altitude 
+
+```{r moddark}
+
+
+modprepDD<-modprep |> select(sum_dark7, `Chronic anthropogenic disturbance`:`Precipitation Seasonality`)  
+  # mutate(`Annual Precipitation` = scale(`Annual Precipitation`),
+  #        `Chronic anthropogenic disturbance` = scale(`Chronic anthropogenic disturbance`),
+  #        `Temperature Annual Range` = scale(`Temperature Annual Range`),
+  #        Altitude = scale(Altitude),
+  #        `Mean Diurnal Range` = scale(`Mean Diurnal Range`),
+  #        Isothermality = scale(Isothermality))
+
+modelo_dark <-  glm(sum_dark7 ~., data = modprepDD,family = poisson(link = "log"))
+summary(modelo_dark)
+
+#hist(residuals(modelo_dark))
+#plot(modelo_dark_step)
+
+modelo_dark_step <- MASS::stepAIC(modelo_dark, direction = "both")
+summary(modelo_dark_step)
+
+
+
+
+#1-modelo_dark_step$dev/modelo_dark_step$null
+```
+
+## Completeness
+```{r modcompl}
+
+modprepCC<- modcompl |> select(completeness, `Chronic anthropogenic disturbance`:`Precipitation Seasonality`)
+
+
+modcompleteness <- glm(completeness ~., data = modprepCC)  
+summary(modcompleteness)
+
+
+modelo_compl_step <- MASS::stepAIC(modcompleteness, direction = "both")
+summary(modelo_compl_step)
+
+```
+## Dispersal
+
+-   Dispersao na dark diminui com perturbacao e aumenta com precipitacao.
+
+Seria interessante ver a diferenca na dispersao entre observada e dark. A gente usa isso pra explicar o porque das especies estarem na dark.
+
+```{r moddisp}
+
+modprepMDD<- modprep |> select(dark_MDD,obs_MDD, `Chronic anthropogenic disturbance`:`Precipitation Seasonality`)
+
+modelo_dispObs <-  glm(obs_MDD ~., data = modprepMDD[,-c(1)])
+
+modelo_dispObs_step <- MASS::stepAIC(modelo_dispObs, direction = "both")
+
+
+#plots(modelo_disp)
+#hist(residuals(modelo_disp))
+summary(modelo_dispObs_step)
+
+
+modelo_dispDark <-  glm(dark_MDD ~., data = modprepMDD[,-c(2)])
+
+modelo_dispDark_step <- MASS::stepAIC(modelo_dispDark, direction = "both")
+
+#plots(modelo_disp)
+#hist(residuals(modelo_disp))
+summary(modelo_dispDark_step)
+
+
+#1-modelo_disp$dev/modelo_disp$null
+
+```
+
+## Tables
+
+```{r tables}
+library(broom)
+tidy_obs <- tidy(modelo_obs_step) %>% mutate(Model = "Observed")
+tidy_dark <- tidy(modelo_dark_step) %>% mutate(Model = "Dark")
+tidy_compl <- tidy(modelo_compl_step) %>% mutate(Model = "Completeness")
+tidy_MDDObs <- tidy(modelo_dispObs_step) %>% mutate(Model = "MDDObs")
+tidy_MDDDark <- tidy(modelo_dispDark_step) %>% mutate(Model = "MDDDark")
+
+
+
+
+# Combine results into a single table
+results_table <- bind_rows(tidy_obs, tidy_dark,tidy_compl, tidy_MDDObs, tidy_MDDDark) %>%
+  select(Model, term, estimate, std.error, statistic, p.value) %>%
+  mutate(
+    estimate = round(estimate, 3),
+    std.error = round(std.error, 3),
+    statistic = round(statistic, 2),
+    p.value = ifelse(p.value < 0.001, "<0.001", round(p.value, 3)) # Format p-values properly
+  )
+
+# Rename columns for clarity
+colnames(results_table) <- c("Model", "Variable", "Estimate", "Std. Error", "Z value", "p-value")
+
+
+library("flextable")
+
+
+# **Option 3: flextable (for Word/HTML)**
+flextable(results_table) %>%
+  autofit()
+```
+
